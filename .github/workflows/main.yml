@@ -1,0 +1,91 @@
+name: Build AzadNet APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Locate project (loose files or uploaded AzadNet-source.zip)
+        id: locate
+        shell: bash
+        run: |
+          set -e
+          if [ -f gradlew ]; then
+            DIR="."
+          elif [ -f AzadNet-source.zip ]; then
+            unzip -oq AzadNet-source.zip
+            DIR="AzadNet"
+          elif [ -f AzadNet/gradlew ]; then
+            DIR="AzadNet"
+          else
+            echo "::error::Project not found. Upload AzadNet-source.zip to the repository root."
+            exit 1
+          fi
+          test -f "$DIR/gradlew" || { echo "::error::gradlew missing in $DIR"; exit 1; }
+          chmod +x "$DIR/gradlew"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Project directory: $DIR"
+          ls -la "$DIR"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle (with caching)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: ${{ steps.locate.outputs.dir }}
+
+      - name: Build debug APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Show APK
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: ls -la app/build/outputs/apk/debug/
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzadNet-debug-apk
+          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Unit tests (do not block the APK)
+        continue-on-error: true
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: ./gradlew --no-daemon testDebugUnitTest
+
+      - name: Android lint (do not block the APK)
+        continue-on-error: true
+        working-directory: ${{ steps.locate.outputs.dir }}
+        run: ./gradlew --no-daemon lintDebug
+
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzadNet-reports
+          path: |
+            ${{ steps.locate.outputs.dir }}/app/build/reports/tests/
+            ${{ steps.locate.outputs.dir }}/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+          retention-days: 14
